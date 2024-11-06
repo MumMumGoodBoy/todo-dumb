@@ -6,10 +6,10 @@ import (
 	"os"
 
 	"github.com/joho/godotenv"
-	"github.com/mummumgoodboy/usm/internal/model"
-	"github.com/mummumgoodboy/usm/internal/route"
-	"github.com/mummumgoodboy/usm/internal/service"
 	"github.com/mummumgoodboy/verify"
+	"github.com/onfirebyte/todo-dumb/internal/model"
+	"github.com/onfirebyte/todo-dumb/internal/route"
+	"github.com/onfirebyte/todo-dumb/internal/service"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
@@ -31,14 +31,13 @@ func main() {
 	}
 
 	// Migrate the schema
-	db.AutoMigrate(&model.User{})
+	db.AutoMigrate(&model.Todo{})
 
-	privateKey := os.Getenv("JWT_PRIVATE_KEY")
 	publicKey := os.Getenv("JWT_PUBLIC_KEY")
 	port := os.Getenv("PORT")
 
 	log.Println("Database migrated")
-	userService, err := service.NewUserService(db, privateKey)
+	userService, err := service.NewTodoService(db)
 	if err != nil {
 		log.Fatal("Error creating user service", err)
 	}
@@ -48,8 +47,7 @@ func main() {
 		log.Fatal("Error creating verifier", err)
 	}
 
-	route.CreateUserRoute(userService)
-	route.MeRoute(userService, verifier)
+	route.CreateTodoRoute(userService, verifier)
 
 	// start the server
 	err = http.ListenAndServe(":"+port, nil)

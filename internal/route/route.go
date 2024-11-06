@@ -2,16 +2,15 @@ package route
 
 import (
 	"encoding/json"
-	"errors"
-	"log/slog"
 	"net/http"
 	"strconv"
 
-	"github.com/mummumgoodboy/usm/internal/auth"
-	"github.com/mummumgoodboy/usm/internal/dto"
-	"github.com/mummumgoodboy/usm/internal/model"
-	"github.com/mummumgoodboy/usm/internal/service"
 	"github.com/mummumgoodboy/verify"
+	"github.com/onfirebyte/todo-dumb/internal/auth"
+	"github.com/onfirebyte/todo-dumb/internal/dto"
+	"github.com/onfirebyte/todo-dumb/internal/model"
+	"github.com/onfirebyte/todo-dumb/internal/service"
+	"gorm.io/gorm"
 )
 
 func JsonHeaderMiddleware(next http.HandlerFunc) http.HandlerFunc {
@@ -21,107 +20,63 @@ func JsonHeaderMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-func CreateUserRoute(userService *service.UserService) {
-	http.HandleFunc("POST /auth/login", JsonHeaderMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		var input model.LoginUserInput
-		err := json.NewDecoder(r.Body).Decode(&input)
-		if err != nil {
-			resp := dto.Error{
-				Error: "error while decoding request body",
-				Code:  "bad_input",
-			}
-			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(resp)
+func CreateTodoRoute(todoService *service.TodoService, verify *verify.JWTVerifier) {
+	http.HandleFunc("GET /todos", JsonHeaderMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		claim, ok := getClaim(verify, r, w)
+		if !ok {
 			return
 		}
-
-		if input.UserName == "" || input.Password == "" {
-			resp := dto.Error{
-				Error: "username or password is empty",
-				Code:  "bad_input",
-			}
-			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(resp)
-			return
-		}
-
-		signed, err := userService.LoginUser(input)
+		todos, err := todoService.GetTodosByUserId(claim.UserId)
 		if err != nil {
-			if errors.Is(err, service.ErrWrongCredentials) {
-				resp := dto.Error{
-					Error: "wrong username or password",
-					Code:  "wrong_credentials",
-				}
-				w.WriteHeader(http.StatusUnauthorized)
-				json.NewEncoder(w).Encode(resp)
-				return
-			}
-
-			slog.Warn("error while logging in",
-				"error", err)
-			resp := dto.Error{
-				Error: "error while logging in",
-				Code:  "internal_error",
-			}
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(resp)
-			return
-		}
-
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(dto.LoginResponse{
-			Token: signed,
-		})
-	}))
-
-	http.HandleFunc("POST /auth/register", JsonHeaderMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		var input model.RegisterUserInput
-		err := json.NewDecoder(r.Body).Decode(&input)
-		if err != nil {
-			resp := dto.Error{
-				Error: "error while decoding request body",
-				Code:  "bad_input",
-			}
-			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(resp)
-			return
-		}
-		if input.UserName == "" ||
-			input.Email == "" ||
-			input.Password == "" ||
-			input.FirstName == "" ||
-			input.LastName == "" {
-			w.WriteHeader(http.StatusBadRequest)
 			json.NewEncoder(w).Encode(dto.Error{
-				Error: "one or more fields are empty",
-				Code:  "bad_input",
+				Error: "error while fetching todos",
+				Code:  "internal_error",
+			})
+			return
+		}
+
+		resp := make([]dto.Todo, 0, len(todos))
+		for _, todo := range todos {
+			resp = append(resp, dto.Todo{
+				Id:      todo.ID,
+				Title:   todo.Title,
+				Content: todo.Content,
+				Done:    todo.Done,
 			})
 		}
 
-		err = userService.RegisterUser(input)
-		if err != nil {
-			if errors.Is(err, service.ErrUserExists) {
-				w.WriteHeader(http.StatusConflict)
-				json.NewEncoder(w).Encode(dto.Error{
-					Error: "user already exists",
-					Code:  "user_exists",
-				})
-				return
-			}
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(resp)
+	}))
 
-			if errors.Is(err, service.ErrEmailExists) {
-				w.WriteHeader(http.StatusConflict)
-				json.NewEncoder(w).Encode(dto.Error{
-					Error: "email already exists",
-					Code:  "email_exists",
-				})
-				return
-			}
-			slog.Warn("error while registering user",
-				"error", err)
+	http.HandleFunc("POST /todos", JsonHeaderMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		claim, ok := getClaim(verify, r, w)
+		if !ok {
+			return
+		}
+
+		var input dto.CreateTodoInput
+		err := json.NewDecoder(r.Body).Decode(&input)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(dto.Error{
+				Error: "invalid input",
+				Code:  "bad_request",
+			})
+			return
+		}
+
+		err = todoService.CreateTodo(model.Todo{
+			Title:   input.Title,
+			Content: input.Content,
+			OwnerID: claim.UserId,
+			Done:    false,
+		})
+		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			json.NewEncoder(w).Encode(dto.Error{
-				Error: "error while registering user",
+				Error: "error while creating todo",
 				Code:  "internal_error",
 			})
 			return
@@ -130,241 +85,130 @@ func CreateUserRoute(userService *service.UserService) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
-	// TODO: Add credentials check
-	http.HandleFunc("GET /users", JsonHeaderMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		// get ids from query params
-		idsStr, ok := r.URL.Query()["id"]
+	http.HandleFunc("PUT /todos", JsonHeaderMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		claim, ok := getClaim(verify, r, w)
 		if !ok {
+			return
+		}
+
+		var input dto.Todo
+		err := json.NewDecoder(r.Body).Decode(&input)
+		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			json.NewEncoder(w).Encode(dto.Error{
-				Error: "id is required",
-				Code:  "bad_input",
+				Error: "invalid input",
+				Code:  "bad_request",
 			})
 			return
 		}
 
-		ids := make([]uint, 0, len(idsStr))
-		for _, idStr := range idsStr {
-			id, err := strconv.Atoi(idStr)
-			if err != nil {
-				w.WriteHeader(http.StatusBadRequest)
-				json.NewEncoder(w).Encode(dto.Error{
-					Error: "id must be an integer",
-					Code:  "bad_input",
-				})
-				return
-			}
-			if id < 1 {
-				w.WriteHeader(http.StatusBadRequest)
-				json.NewEncoder(w).Encode(dto.Error{
-					Error: "id must be greater than 0",
-					Code:  "bad_input",
-				})
-			}
-			ids = append(ids, uint(id))
-		}
-
-		users, err := userService.GetUsersById(ids)
+		isOwner, err := todoService.IsOwner(input.Id, claim.UserId)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			json.NewEncoder(w).Encode(dto.Error{
-				Error: "error while fetching users",
+				Error: "error while checking ownership",
+				Code:  "internal_error",
+			})
+			return
+		}
+		if !isOwner {
+			w.WriteHeader(http.StatusForbidden)
+			json.NewEncoder(w).Encode(dto.Error{
+				Error: "you are not the owner of this todo",
+				Code:  "forbidden",
+			})
+			return
+		}
+
+		err = todoService.UpdateTodoById(model.Todo{
+			Model: gorm.Model{
+				ID: input.Id,
+			},
+			Title:   input.Title,
+			Content: input.Content,
+			OwnerID: claim.UserId,
+			Done:    input.Done,
+		})
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(dto.Error{
+				Error: "error while creating todo",
 				Code:  "internal_error",
 			})
 			return
 		}
 
-		resp := make([]dto.UserCommonInfo, 0, len(users))
-		for _, user := range users {
-			resp = append(resp, dto.UserCommonInfo{
-				UserId:    user.ID,
-				UserName:  user.UserName,
-				FirstName: user.FirstName,
-				LastName:  user.LastName,
-			})
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	http.HandleFunc("DELETE /todos/{id}", JsonHeaderMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		claim, ok := getClaim(verify, r, w)
+		if !ok {
+			return
 		}
 
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(resp)
+		idString := r.PathValue("id")
+		id, err := strconv.ParseUint(idString, 10, 64)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(dto.Error{
+				Error: "invalid input, id must be integer",
+				Code:  "bad_request",
+			})
+			return
+		}
+
+		isOwner, err := todoService.IsOwner(uint(id), claim.UserId)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(dto.Error{
+				Error: "error while checking ownership",
+				Code:  "internal_error",
+			})
+			return
+		}
+		if !isOwner {
+			w.WriteHeader(http.StatusForbidden)
+			json.NewEncoder(w).Encode(dto.Error{
+				Error: "you are not the owner of this todo",
+				Code:  "forbidden",
+			})
+			return
+		}
+
+		err = todoService.DeleteTodoById(uint(id))
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(dto.Error{
+				Error: "error while deleting todo",
+				Code:  "internal_error",
+			})
+			return
+		}
+
+		w.WriteHeader(http.StatusNoContent)
 	}))
 }
 
-func MeRoute(userService *service.UserService, verifier *verify.JWTVerifier) {
-	http.HandleFunc("GET /me", JsonHeaderMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		token, ok := auth.GetTokenHeader(r)
-		if !ok {
-			w.WriteHeader(http.StatusUnauthorized)
-			json.NewEncoder(w).Encode(dto.Error{
-				Error: "token is required in Authorization header",
-				Code:  "unauthorized",
-			})
-			return
-		}
+func getClaim(v *verify.JWTVerifier, r *http.Request, w http.ResponseWriter) (verify.Claims, bool) {
+	token, found := auth.GetTokenHeader(r)
+	if !found {
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(dto.Error{
+			Error: "please provide a token",
+			Code:  "unauthorized",
+		})
+		return verify.Claims{}, false
+	}
+	claim, err := v.Verify(token)
+	if err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(dto.Error{
+			Error: "unauthorized",
+			Code:  "unauthorized",
+		})
+		return verify.Claims{}, false
+	}
 
-		claims, err := verifier.Verify(token)
-		if err != nil {
-			slog.Warn("error while verifying token",
-				"token", token,
-				"error", err)
-			w.WriteHeader(http.StatusUnauthorized)
-			json.NewEncoder(w).Encode(dto.Error{
-				Error: "invalid token",
-				Code:  "unauthorized",
-			})
-			return
-		}
-
-		user, err := userService.GetUserById(claims.UserId)
-		if err != nil {
-			slog.Warn("error while fetching user",
-				"userId", claims.UserId,
-				"error", err)
-			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(dto.Error{
-				Error: "error while fetching user",
-				Code:  "internal_error",
-			})
-			return
-		}
-
-		resp := dto.MeInfo{
-			UserId:    user.ID,
-			UserName:  user.UserName,
-			FirstName: user.FirstName,
-			LastName:  user.LastName,
-		}
-
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(resp)
-	}))
-
-	http.HandleFunc("PUT /me", JsonHeaderMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		token, ok := auth.GetTokenHeader(r)
-		if !ok {
-			w.WriteHeader(http.StatusUnauthorized)
-			json.NewEncoder(w).Encode(dto.Error{
-				Error: "token is required in Authorization header",
-				Code:  "unauthorized",
-			})
-			return
-		}
-
-		claims, err := verifier.Verify(token)
-		if err != nil {
-			slog.Warn("error while verifying token",
-				"token", token,
-				"error", err)
-			w.WriteHeader(http.StatusUnauthorized)
-			json.NewEncoder(w).Encode(dto.Error{
-				Error: "invalid token",
-				Code:  "unauthorized",
-			})
-			return
-		}
-
-		user, err := userService.GetUserById(claims.UserId)
-		if err != nil {
-			slog.Warn("error while fetching user",
-				"userId", claims.UserId,
-				"error", err)
-			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(dto.Error{
-				Error: "error while fetching user",
-				Code:  "internal_error",
-			})
-			return
-		}
-
-		var req dto.UpdateUserRequest
-		err = json.NewDecoder(r.Body).Decode(&req)
-		if err != nil {
-			slog.Warn("error while decoding request",
-				"error", err)
-			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(dto.Error{
-				Error: "error while decoding request",
-				Code:  "bad_input",
-			})
-			return
-		}
-
-		user.FirstName = req.FirstName
-		user.LastName = req.LastName
-
-		err = userService.UpdateUser(user)
-		if err != nil {
-			slog.Warn("error while updating user",
-				"userId", user.ID,
-				"error", err)
-			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(dto.Error{
-				Error: "error while updating user",
-				Code:  "internal_error",
-			})
-			return
-		}
-
-		w.WriteHeader(http.StatusNoContent)
-	}))
-
-	http.HandleFunc("PATCH /me/password", JsonHeaderMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		token, ok := auth.GetTokenHeader(r)
-		if !ok {
-			w.WriteHeader(http.StatusUnauthorized)
-			json.NewEncoder(w).Encode(dto.Error{
-				Error: "token is required in Authorization header",
-				Code:  "unauthorized",
-			})
-			return
-		}
-
-		claims, err := verifier.Verify(token)
-		if err != nil {
-			slog.Warn("error while verifying token",
-				"token", token,
-				"error", err)
-			w.WriteHeader(http.StatusUnauthorized)
-			json.NewEncoder(w).Encode(dto.Error{
-				Error: "invalid token",
-				Code:  "unauthorized",
-			})
-			return
-		}
-
-		var req dto.ChangePasswordRequest
-		err = json.NewDecoder(r.Body).Decode(&req)
-		if err != nil {
-			slog.Warn("error while decoding request",
-				"error", err)
-			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(dto.Error{
-				Error: "error while decoding request",
-				Code:  "bad_input",
-			})
-			return
-		}
-
-		err = userService.ChangePassword(claims.UserId, req.OldPassword, req.NewPassword)
-		if err != nil {
-			if errors.Is(err, service.ErrWrongCredentials) {
-				w.WriteHeader(http.StatusForbidden)
-				json.NewEncoder(w).Encode(dto.Error{
-					Error: "wrong password",
-					Code:  "wrong_password",
-				})
-				return
-			}
-
-			slog.Warn("error while changing password",
-				"userId", claims.UserId,
-				"error", err)
-			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(dto.Error{
-				Error: "error while changing password",
-				Code:  "internal_error",
-			})
-		}
-
-		w.WriteHeader(http.StatusNoContent)
-	}))
+	return claim, true
 }

@@ -5,31 +5,14 @@ type Error struct {
 	Code  string `json:"code"`
 }
 
-type UserCommonInfo struct {
-	UserId    uint   `json:"userId"`
-	UserName  string `json:"userName"`
-	FirstName string `json:"firstName"`
-	LastName  string `json:"lastName"`
-	IsAdmin   bool   `json:"isAdmin"`
+type CreateTodoInput struct {
+	Title   string `json:"title"`
+	Content string `json:"content"`
 }
 
-type LoginResponse struct {
-	Token string `json:"token"`
-}
-
-type MeInfo struct {
-	UserId    uint   `json:"userId"`
-	UserName  string `json:"userName"`
-	FirstName string `json:"firstName"`
-	LastName  string `json:"lastName"`
-}
-
-type UpdateUserRequest struct {
-	FirstName string `json:"firstName"`
-	LastName  string `json:"lastName"`
-}
-
-type ChangePasswordRequest struct {
-	OldPassword string `json:"oldPassword"`
-	NewPassword string `json:"newPassword"`
+type Todo struct {
+	Id      uint   `json:"id"`
+	Title   string `json:"title"`
+	Content string `json:"content"`
+	Done    bool   `json:"done"`
 }

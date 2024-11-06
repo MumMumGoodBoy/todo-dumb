@@ -1,4 +1,4 @@
-module github.com/mummumgoodboy/usm
+module github.com/onfirebyte/todo-dumb
 
 go 1.22.5
 
