@@ -6,10 +6,56 @@ services:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
       - POSTGRES_DB=postgres
-    ports:
-      - "5434:5432"
     volumes:
       - ./data:/var/lib/postgresql
+    networks:
+      - main-net
 
   todo-service:
-    image:
+    image: ghcr.io/mummumgoodboy/todo-dumb:main
+    container_name: todo-service
+    environment:
+      POSTGRES_URI: "postgresql://postgres:postgres@postgres:5432/postgres"
+      PORT: "3000"
+      JWT_PUBLIC_KEY: "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAX8kTcJQhr9pFNISj3uSPVsJ3Pnq/he9iGJa64fHfWzk=\n-----END PUBLIC KEY-----"
+    volumes:
+      - /dev/null:/.env
+    depends_on:
+      - postgres
+    networks:
+      - main-net
+
+  usm-service:
+    image: ghcr.io/mummumgoodboy/usm:main
+    container_name: usm-service
+    environment:
+      POSTGRES_URI: "postgresql://postgres:postgres@postgres:5432/postgres"
+      PORT: "3000"
+      JWT_PUBLIC_KEY: "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAX8kTcJQhr9pFNISj3uSPVsJ3Pnq/he9iGJa64fHfWzk=\n-----END PUBLIC KEY-----"
+      JWT_PRIVATE_KEY: "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIJ2B1aaL0snukAQ9BqtFdCGJNvPo/QgWClWTO5mNf9El\n-----END PRIVATE KEY-----"
+    volumes:
+      - /dev/null:/.env
+    depends_on:
+      - postgres
+    networks:
+      - main-net
+
+  web:
+    image: ghcr.io/mummumgoodboy/todo-app:main
+    container_name: web
+    ports:
+      - "5000:5000"
+    environment:
+      TODO_URL: "http://todo-service:3000"
+      AUTH_URL: "http://usm-service:3000"
+      PORT: "5000"
+    volumes:
+      - /dev/null:/.env
+    depends_on:
+      - postgres
+    networks:
+      - main-net
+
+networks:
+  main-net:
+    driver: bridge
